@@ -118,7 +118,7 @@ export class GeminiAdapter implements LlmAdapter {
       config: {
         systemInstruction: input.systemPrompt,
         maxOutputTokens: input.maxOutputTokens,
-        httpOptions: { timeout: 30_000 },
+        httpOptions: { timeout: 90_000 },
         tools: [
           {
             functionDeclarations: input.tools.map(toGeminiTool),
