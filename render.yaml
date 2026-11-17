@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: reto-perxia
+    runtime: node
+    plan: free
+    buildCommand: npm ci
+    startCommand: npm run dev
+    healthCheckPath: /api/health
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: ANTHROPIC_MODEL
+        value: claude-sonnet-4-5
+      - key: MAX_TOOL_ITERATIONS
+        value: "25"
+      - key: MAX_SESSION_TOKENS
+        value: "30000"

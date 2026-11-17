@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#103c31">
+    <title>Registro de contratos | Perxia</title>
+    <link rel="stylesheet" href="/style.css">
+  </head>
+  <body>
+    <main class="layout">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Perxia · Administración</p>
+          <h1>Registro de contratos</h1>
+          <p class="subtitle">Agente conversacional para contratos vigentes</p>
+        </div>
+        <div class="topbar-actions">
+          <span id="health" class="health">Conectando…</span>
+          <button id="new-session" class="secondary" type="button">Nueva sesión</button>
+        </div>
+      </header>
+
+      <section class="chat-shell" aria-label="Conversación con el agente">
+        <div id="conversation" class="conversation" aria-live="polite"></div>
+        <div id="thinking" class="thinking" hidden>
+          <span class="spinner" aria-hidden="true"></span>
+          El agente está procesando…
+        </div>
+        <form id="chat-form" class="composer">
+          <label class="sr-only" for="message">Escribe tu mensaje</label>
+          <textarea id="message" rows="2" maxlength="20000" placeholder="Ej.: Procesa el buzón con fecha de hoy 2026-09-03" required></textarea>
+          <button id="send" class="primary" type="submit">Enviar</button>
+        </form>
+        <p class="footnote">Los registros se guardan en la carpeta local <code>out/</code>. El agente no firma contratos ni toma decisiones legales.</p>
+      </section>
+    </main>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
