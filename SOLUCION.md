@@ -40,7 +40,7 @@ El servidor conserva por sesión las extracciones y validaciones efectuadas y ex
 ## 4. Elección del modelo y costo
 
 - **Proveedor/modelo:** Google Gemini API, `gemini-3.8-flash` por defecto. Se configura con `GEMINI_MODEL`.
-- **Motivo:** permite function calling y dispone de una cuota gratuita para pruebas; la extracción y las escrituras críticas siguen estando en código determinista.
+- **Motivo:** permite function calling y dispone de una cuota gratuita para pruebas; se fija el nivel de pensamiento en `low` para limitar latencia en este flujo de herramientas. La extracción y las escrituras críticas siguen estando en código determinista.
 - **Costo de referencia:** USD 0 dentro de la cuota gratuita disponible para ese modelo. La cuota y disponibilidad pueden cambiar; verifica los límites actuales antes de desplegar y no habilites facturación si necesitas evitar cargos. El nivel gratuito puede usar las solicitudes para mejorar productos de Google.
 
 ## 5. Estrategia de extracción

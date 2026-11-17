@@ -1,5 +1,6 @@
 import {
   GoogleGenAI,
+  ThinkingLevel,
   type Content,
   type FunctionDeclaration,
   type Part,
@@ -118,6 +119,7 @@ export class GeminiAdapter implements LlmAdapter {
       config: {
         systemInstruction: input.systemPrompt,
         maxOutputTokens: input.maxOutputTokens,
+        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
         httpOptions: { timeout: 90_000 },
         tools: [
           {
