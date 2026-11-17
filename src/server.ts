@@ -1,11 +1,18 @@
 import "dotenv/config";
-import Anthropic from "@anthropic-ai/sdk";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
+import { GeminiAdapter, toolResultMessage } from "./llm/gemini.js";
+import type {
+  LlmAdapter,
+  LlmMessage,
+  LlmResponse,
+  LlmToolDefinition,
+  LlmToolResult,
+} from "./llm/adapter.js";
 import {
   herramientas,
   registrar,
@@ -15,7 +22,7 @@ import { logTool } from "./tools/storage.js";
 import type { Contract, Context } from "./tools/storage.js";
 
 const root = process.cwd();
-const model = process.env.ANTHROPIC_MODEL || "claude-sonnet-4-5";
+const model = process.env.GEMINI_MODEL || "gemini-3.8-flash";
 const port = Number(process.env.PORT ?? 3000);
 const maxToolIterations = Number(process.env.MAX_TOOL_ITERATIONS ?? 25);
 const maxSessionTokens = Number(process.env.MAX_SESSION_TOKENS ?? 30_000);
@@ -46,7 +53,7 @@ type AgentIntent =
 type AgentState = "inactivo" | "procesando" | "esperando_confirmacion";
 type PendingAction = { mensaje_id: string; contrato: Contract };
 type SessionState = {
-  messages: Anthropic.Messages.MessageParam[];
+  messages: LlmMessage[];
   history: ChatEntry[];
   pending: PendingAction | null;
   estimatedTokens: number;
@@ -57,23 +64,15 @@ type SessionState = {
 };
 
 const sessions = new Map<string, SessionState>();
-const anthropic = process.env.ANTHROPIC_API_KEY
-  ? new Anthropic({
-      apiKey: process.env.ANTHROPIC_API_KEY,
-      timeout: 30_000,
-      maxRetries: 1,
-    })
-  : null;
+const apiKey = process.env.GEMINI_API_KEY;
+const llm: LlmAdapter | null = apiKey ? new GeminiAdapter(apiKey) : null;
 
-const toolDefinitions: Anthropic.Messages.Tool[] = Object.entries(herramientas).map(
+const toolDefinitions: LlmToolDefinition[] = Object.entries(herramientas).map(
   ([name, tool]) => {
-    const schema = z.toJSONSchema(z.object(tool.args));
-    const { $schema: _schemaVersion, ...input_schema } = schema;
-    return {
-      name,
-      description: tool.description,
-      input_schema: input_schema as Anthropic.Messages.Tool.InputSchema,
-    };
+    const { $schema: _schemaVersion, ...parameters } = z.toJSONSchema(
+      z.object(tool.args),
+    );
+    return { name, description: tool.description, parameters };
   },
 );
 
@@ -150,6 +149,22 @@ async function rejectToolCall(
     });
   }
   return JSON.stringify({ ok: false, error: reason });
+}
+
+function isToolName(name: string): name is ToolName {
+  return Object.hasOwn(herramientas, name);
+}
+
+function parseToolResult(serialized: string): Record<string, unknown> {
+  const result: unknown = JSON.parse(serialized);
+  if (!isRecord(result)) {
+    throw new Error("La herramienta devolvió un resultado que no es un objeto JSON.");
+  }
+  return result;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 async function executeTool(name: ToolName, input: unknown, ctx: Context): Promise<string> {
@@ -350,8 +365,8 @@ async function handleChat(body: unknown): Promise<{
       session.pending = { ...pending, contrato: correctedContract };
     }
     session.state = session.pending ? "esperando_confirmacion" : "inactivo";
-    session.messages.push({ role: "user", content: message });
-    session.messages.push({ role: "assistant", content: reply });
+    session.messages.push({ role: "user", text: message });
+    session.messages.push({ role: "assistant", text: reply });
     session.history.push({ role: "user", content: message });
     session.history.push({
       role: "assistant",
@@ -371,7 +386,7 @@ async function handleChat(body: unknown): Promise<{
     };
   }
 
-  session.messages.push({ role: "user", content: message });
+  session.messages.push({ role: "user", text: message });
   session.history.push({ role: "user", content: message });
   const system = await loadSystemPrompt();
   const toolCalls: ToolCallRecord[] = [];
@@ -383,12 +398,12 @@ async function handleChat(body: unknown): Promise<{
       reply = `Se alcanzó el límite aproximado de ${maxSessionTokens} tokens de esta sesión. Las herramientas ejecutadas hasta ahora están en el historial.`;
       break;
     }
-    let response: Anthropic.Messages.Message;
+    let response: LlmResponse;
     try {
-      response = await anthropic!.messages.create({
+      response = await llm!.enviar({
         model,
-        max_tokens: 2048,
-        system,
+        maxOutputTokens: 2048,
+        systemPrompt: system,
         messages: session.messages,
         tools: toolDefinitions,
       });
@@ -396,7 +411,7 @@ async function handleChat(body: unknown): Promise<{
       const detail = error instanceof Error ? error.message : "Error de conexión desconocido.";
       reply = `No se pudo completar la solicitud al modelo. ${detail}`;
       session.state = session.pending ? "esperando_confirmacion" : "inactivo";
-      session.messages.push({ role: "assistant", content: reply });
+      session.messages.push({ role: "assistant", text: reply });
       session.history.push({
         role: "assistant",
         content: reply,
@@ -413,29 +428,22 @@ async function handleChat(body: unknown): Promise<{
         state: session.state,
       };
     }
-    session.messages.push({ role: "assistant", content: response.content });
+    session.messages.push(response.message);
     session.estimatedTokens += Math.ceil(
-      response.content.reduce(
-        (total, block) => total + (block.type === "text" ? block.text.length : 100),
-        0,
-      ) / 4,
+      (response.text.length + JSON.stringify(response.toolCalls).length) / 4,
     );
-    const requestedTools = response.content.filter(
-      (block): block is Anthropic.Messages.ToolUseBlock => block.type === "tool_use",
-    );
+    const requestedTools = response.toolCalls;
     if (requestedTools.length === 0) {
-      reply = response.content
-        .filter((block): block is Anthropic.Messages.TextBlock => block.type === "text")
-        .map((block) => block.text)
-        .join("\n");
+      reply = response.text;
       break;
     }
     iterations += 1;
-    const results: Anthropic.Messages.ToolResultBlockParam[] = [];
+    const results: LlmToolResult[] = [];
+    const errors: string[] = [];
     for (const call of requestedTools) {
-      const name = call.name as ToolName;
-      if (!Object.hasOwn(herramientas, name)) {
-        const explanation = `Herramienta desconocida: ${call.name}`;
+      const name = call.name;
+      if (!isToolName(name)) {
+        const explanation = `Herramienta desconocida: ${call.name || "(sin nombre)"}`;
         let invalid = JSON.stringify({ ok: false, error: explanation });
         try {
           await logTool(root, {
@@ -452,17 +460,21 @@ async function handleChat(body: unknown): Promise<{
             error: `${explanation}. No se pudo escribir el log: ${detail}`,
           });
         }
-        const record = { nombre: call.name, argumentos: call.input, resultado: summarizeToolResult(invalid) };
+        const record = {
+          nombre: call.name,
+          argumentos: call.args,
+          resultado: summarizeToolResult(invalid),
+        };
         toolCalls.push(record);
-        results.push({ type: "tool_result", tool_use_id: call.id, content: invalid, is_error: true });
+        errors.push(invalid);
         continue;
       }
 
       let serialized: string;
       if (name === "contratos_registrar") {
-        const parsed = z.object(registrar.args).safeParse(call.input);
+        const parsed = z.object(registrar.args).safeParse(call.args);
         if (!parsed.success) {
-          serialized = await executeTool(name, call.input, { directory: root, sessionId });
+          serialized = await executeTool(name, call.args, { directory: root, sessionId });
         } else if (parsed.data.confirmado === true) {
           serialized = await rejectToolCall(
             name,
@@ -487,7 +499,7 @@ async function handleChat(body: unknown): Promise<{
               { directory: root, sessionId },
             );
           } else {
-            serialized = await executeTool(name, call.input, { directory: root, sessionId });
+            serialized = await executeTool(name, call.args, { directory: root, sessionId });
           }
         }
         const result = JSON.parse(serialized) as { ok: boolean; error?: string };
@@ -500,19 +512,19 @@ async function handleChat(body: unknown): Promise<{
           };
         }
       } else if (name === "contratos_extraer") {
-        const parsed = z.object(herramientas.contratos_extraer.args).safeParse(call.input);
-        serialized = await executeTool(name, call.input, { directory: root, sessionId });
+        const parsed = z.object(herramientas.contratos_extraer.args).safeParse(call.args);
+        serialized = await executeTool(name, call.args, { directory: root, sessionId });
         const result = JSON.parse(serialized) as { ok: boolean; data?: Contract };
         if (parsed.success && result.ok && result.data) {
           session.extractedContracts.set(parsed.data.mensaje_id, result.data);
         }
       } else if (name === "contratos_validar") {
-        const parsed = z.object(herramientas.contratos_validar.args).safeParse(call.input);
+        const parsed = z.object(herramientas.contratos_validar.args).safeParse(call.args);
         const extracted = parsed.success
           ? session.extractedContracts.get(parsed.data.mensaje_id)
           : undefined;
         if (!parsed.success) {
-          serialized = await executeTool(name, call.input, { directory: root, sessionId });
+          serialized = await executeTool(name, call.args, { directory: root, sessionId });
         } else if (!extracted) {
           serialized = await rejectToolCall(
             name,
@@ -528,7 +540,7 @@ async function handleChat(body: unknown): Promise<{
             { directory: root, sessionId },
           );
         } else {
-          serialized = await executeTool(name, call.input, { directory: root, sessionId });
+          serialized = await executeTool(name, call.args, { directory: root, sessionId });
         }
         const result = JSON.parse(serialized) as {
           ok: boolean;
@@ -548,25 +560,26 @@ async function handleChat(body: unknown): Promise<{
           };
         }
       } else {
-        serialized = await executeTool(name, call.input, { directory: root, sessionId });
+        serialized = await executeTool(name, call.args, { directory: root, sessionId });
       }
       const record = {
         nombre: name,
-        argumentos: call.input,
+        argumentos: call.args,
         resultado: summarizeToolResult(serialized),
       };
       session.estimatedTokens += Math.ceil(
-        (JSON.stringify(call.input).length + serialized.length) / 4,
+        (JSON.stringify(call.args).length + serialized.length) / 4,
       );
       toolCalls.push(record);
       results.push({
-        type: "tool_result",
-        tool_use_id: call.id,
-        content: serialized,
-        ...(serialized.includes('"ok":false') ? { is_error: true } : {}),
+        name,
+        response: parseToolResult(serialized),
+        ...(call.id ? { id: call.id } : {}),
       });
     }
-    session.messages.push({ role: "user", content: results });
+    session.messages.push(
+      toolResultMessage(results, errors.length ? errors.join("\n") : undefined),
+    );
     if (session.estimatedTokens >= maxSessionTokens) {
       reply = `Se alcanzó el límite aproximado de ${maxSessionTokens} tokens. Se ejecutaron las llamadas mostradas; revisa sus resultados antes de continuar.`;
       break;
@@ -619,7 +632,7 @@ async function serveStatic(pathname: string, response: ServerResponse): Promise<
 const server = createServer(async (request, response) => {
   const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
   if (request.method === "GET" && url.pathname === "/api/health") {
-    jsonResponse(response, 200, { ok: true, provider: "anthropic", model });
+    jsonResponse(response, 200, { ok: true, provider: "gemini", model });
     return;
   }
   if (request.method === "GET" && url.pathname.startsWith("/api/sessions/")) {
@@ -639,9 +652,9 @@ const server = createServer(async (request, response) => {
     return;
   }
   if (request.method === "POST" && url.pathname === "/api/chat") {
-    if (!anthropic) {
+    if (!llm) {
       jsonResponse(response, 503, {
-        error: "Falta ANTHROPIC_API_KEY. Configúrala en el entorno del backend para usar el chat.",
+        error: "Falta GEMINI_API_KEY. Configúrala en el entorno del backend para usar el chat.",
       });
       return;
     }
@@ -668,7 +681,7 @@ const server = createServer(async (request, response) => {
 
 server.listen(port, () => {
   console.log(`Agente de contratos disponible en http://localhost:${port}`);
-  if (!anthropic) {
-    console.log("El chat requiere ANTHROPIC_API_KEY; la demo determinista funciona sin ella.");
+  if (!llm) {
+    console.log("El chat requiere GEMINI_API_KEY; la demo determinista funciona sin ella.");
   }
 });

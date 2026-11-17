@@ -11,7 +11,7 @@ Navegador (web/)
       │ HTTP
       ▼
 Backend TypeScript (src/server.ts)
-  ├─ ciclo de tool use de Anthropic
+  ├─ ciclo de tool use independiente del proveedor
   ├─ sesiones en memoria con intent y estado explícitos
   └─ validación de argumentos con Zod
       │
@@ -25,11 +25,11 @@ Herramientas deterministas (src/tools/contratos.ts)
 - **Conocimiento del proceso:** `src/knowledge/registro-contratos.md`.
 - **Ejecución:** `src/tools/contratos.ts` y persistencia auxiliar en `src/tools/storage.ts`.
 - **Interfaz:** HTML, CSS y JavaScript en `web/`.
-- **Adaptador de modelo:** el ciclo del servidor consume la API de Anthropic; la clave vive únicamente en `ANTHROPIC_API_KEY`.
+- **Adaptador de modelo:** contrato en `src/llm/adapter.ts` e implementación Gemini en `src/llm/gemini.ts`; la clave vive únicamente en `GEMINI_API_KEY`.
 
 ## 3. Ciclo del agente y confirmación
 
-El backend envía el historial, el prompt y las herramientas a Claude. Valida con Zod cada entrada propuesta, ejecuta la herramienta en TypeScript y devuelve el resultado al modelo. El ciclo se limita con `MAX_TOOL_ITERATIONS`. El límite de sesión es configurable mediante `MAX_SESSION_TOKENS` y se estima por caracteres; para producción conviene usar el conteo real de tokens.
+El backend envía el historial, el prompt y las herramientas a Gemini mediante el adaptador. Valida con Zod cada entrada propuesta, ejecuta la herramienta en TypeScript y devuelve el resultado al modelo. El ciclo se limita con `MAX_TOOL_ITERATIONS`. El límite de sesión es configurable mediante `MAX_SESSION_TOKENS` y se estima por caracteres; para producción conviene usar el conteo real de tokens.
 
 El servidor clasifica cada mensaje en una intención (`procesar_buzon`, `consultar_alertas`, `procesar_y_alertar`, `confirmar_registro` o `conversacion`) y actualiza el estado de sesión (`inactivo`, `procesando` o `esperando_confirmacion`). La interfaz muestra intención y estado en la respuesta del agente.
 
@@ -39,9 +39,9 @@ El servidor conserva por sesión las extracciones y validaciones efectuadas y ex
 
 ## 4. Elección del modelo y costo
 
-- **Proveedor/modelo:** Anthropic, `claude-sonnet-4-5` por defecto. Se configura con `ANTHROPIC_MODEL`.
-- **Motivo:** admite tool use con argumentos estructurados; la extracción y las escrituras críticas siguen estando en código determinista.
-- **Costo de referencia:** estimación ilustrativa de USD 0,045 por caso suponiendo 10.000 tokens de entrada y 1.000 de salida, a USD 3/M tokens de entrada y USD 15/M de salida. El precio vigente y el consumo real deben verificarse antes de desplegar; el límite de sesión reduce el riesgo de gasto ilimitado.
+- **Proveedor/modelo:** Google Gemini API, `gemini-3.8-flash` por defecto. Se configura con `GEMINI_MODEL`.
+- **Motivo:** permite function calling y dispone de una cuota gratuita para pruebas; la extracción y las escrituras críticas siguen estando en código determinista.
+- **Costo de referencia:** USD 0 dentro de la cuota gratuita disponible para ese modelo. La cuota y disponibilidad pueden cambiar; verifica los límites actuales antes de desplegar y no habilites facturación si necesitas evitar cargos. El nivel gratuito puede usar las solicitudes para mejorar productos de Google.
 
 ## 5. Estrategia de extracción
 
@@ -65,6 +65,7 @@ Limitaciones actuales: los formatos de fechas y correcciones humanas reconocidos
 | Decisión | Alternativa descartada | Motivo |
 |---|---|---|
 | Extracción determinista para P0 | Dejar que el LLM escriba directamente el maestro | Reduce invenciones y permite una demo sin clave ni variabilidad. |
+| Gemini API con cuota gratuita para la demo | Anthropic de pago | Evita requerir una clave de pago para la presentación; los fixtures son ficticios y no se envía información confidencial. |
 | CSV y archivos JSONL en `out/` | Base de datos | El reto pide un almacenamiento local simple y sin base de datos. |
 | Interfaz web sin framework | React u otro framework | El chat requerido es acotado y así se evitan dependencias de interfaz. |
 | Umbral de revisión 0,85 | Aplicar 0,80 literal del PRD | Sigue el criterio más estricto de la rúbrica adjunta. |
